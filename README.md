@@ -47,6 +47,7 @@ while True:
 
 ## Connection with the RF module
 By default, the pins used to control the RF transceiver are those of the SPI channel 0.0 and, on the Raspberry Pi, the following GPIOs:
+
 Pin | Signal
 --- | ------
 CS | GPIO25
@@ -54,4 +55,5 @@ RST | GPIO17
 MISO | GPIO9 
 MOSI | GPIO10
 SCK | GPIO11
+
 but you can reconfigure the pins and SPI channel to use by calling **PyLora.set_pins()** before **PyLora.init()**
