@@ -6,6 +6,7 @@ mod = Extension("PyLora",
                            "src/lora.c",
                            "src/gpio.c",
                            "src/spi.c"],
+                extra_compile_args = ["-std=c99"],
                 include_dirs = ["./include"])
 
 setup(

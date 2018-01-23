@@ -6,7 +6,9 @@
 #include <linux/types.h>
 #include <linux/spi/spidev.h>
 
-/**
+#define LORA_SPI_HZ        8000000              // up to 10 MHz, but got some bugs in 10 MHz 
+
+/*
  * Perform a full-duplex transfer on the SPI channel.
  * @param fd File handler of the SPI device.
  * @param tx Buffer with data to send.
@@ -21,7 +23,7 @@ spi_transfer(int fd, uint8_t *tx, uint8_t *rx, int size)
       .rx_buf = (unsigned long)rx,
       .len = size,
       .delay_usecs = 5,
-      .speed_hz = 1000000,
+      .speed_hz = LORA_SPI_HZ,
       .bits_per_word = 8
    };
 
@@ -54,8 +56,8 @@ spi_init(char *device)
       return -1;
    }
 
-   uint32_t spd = 16000000;
-   res = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &val);
+   uint32_t spd = LORA_SPI_HZ;
+   res = ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &spd);
    if(res < 0) {
       close(fd);
       return -1;
