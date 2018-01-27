@@ -22,7 +22,7 @@ A simple **sender** program...
 import PyLora
 import time
 PyLora.init()
-PyLora.set_frequency(915e6)
+PyLora.set_frequency(915000000)
 PyLora.enable_crc()
 while True:
     PyLora.send_packet('Hello')
@@ -34,7 +34,7 @@ Meanwhile in the **receiver** program...
 import PyLora
 import time
 PyLora.init()
-PyLora.set_frequency(915e6)
+PyLora.set_frequency(915000000)
 PyLora.enable_crc()
 while True:
     PyLora.receive()   # put into receive mode
