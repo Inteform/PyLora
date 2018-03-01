@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdio.h>
+#include <poll.h>
 
 /**
  * Perform retries to open a system file.
@@ -68,6 +69,28 @@ gpio_open(int pin, int output)
 }
 
 /**
+ * Finish using a pin from user space.
+ * @param pin Pin number to close.
+ * @param fd Control file handler for the pin.
+ * @return 1 if successful.
+ */
+int 
+gpio_close(int pin, int fd)
+{
+   char fn[80];
+   
+   close(fd);
+   
+   fd = open("/sys/class/gpio/unexport", O_WRONLY);
+   if(fd < 0) return fd;
+   sprintf(fn, "%d", pin);
+   write(fd, fn, strlen(fn));
+   close(fd);
+
+   return 1;
+}
+
+/**
  * Change the value of an output pin.
  * @param fd Control file handler for the pin.
  * @param val New value (0-1).
@@ -97,3 +120,39 @@ gpio_input(int fd)
    return 0;
 }
 
+/**
+ * Suspends the process/thread until a rising/falling edge is detected
+ * in a input pin.
+ * @param pin Input pin number.
+ * @param fd Control file handler for the pin (as returned by gpio_open).
+ * @param rising Detect falling edge if zero, rising edge if not.
+ * @param timeout Timeout for waiting the transition in ms; -1 means no timeout at all.
+ */
+int 
+gpio_wait(int pin, int fd, int rising, int timeout)
+{
+   char fn[80];
+   int f;
+   struct pollfd pfd;
+ 
+   sprintf(fn, "/sys/class/gpio/gpio%d/edge", pin);
+   f = open(fn, O_WRONLY);
+   if(f < 0) return f;
+   if(rising) write(f, "rising", 6);
+   else write(f, "falling", 7);
+   close(f);
+
+   pfd.fd = fd;
+   pfd.events = POLLPRI | POLLERR;
+   lseek(fd, 0, SEEK_SET);
+   read(fd, fn, sizeof(fn));
+
+   f = poll(&pfd, 1, timeout);
+   if(f <= 0) return f;
+
+   lseek(fd, 0, SEEK_SET);
+   read(fd, fn, sizeof(fn));
+   
+   if(pfd.revents & pfd.events) return 1;
+   return -1;
+}

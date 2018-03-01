@@ -153,15 +153,16 @@ set_pins(PyObject *self, PyObject *args, PyObject *keywords)
       return NULL;
    }
 
-   char *keys[] = { "spi_device", "cs_pin", "rst_pin", NULL };
+   char *keys[] = { "spi_device", "cs_pin", "rst_pin", "irq_pin", NULL };
    char *spidev = NULL;
    int cs = -1;
    int rst = -1;
+   int irq = -1;
 
-   if(!PyArg_ParseTupleAndKeywords(args, keywords, "|sii", keys, &spidev, &cs, &rst)) 
+   if(!PyArg_ParseTupleAndKeywords(args, keywords, "|siii", keys, &spidev, &cs, &rst, &irq)) 
       return NULL;
 
-   lora_set_pins(spidev, cs, rst);
+   lora_set_pins(spidev, cs, rst, irq);
    Py_RETURN_NONE;
 }
 
@@ -169,6 +170,7 @@ static PyObject *
 init(PyObject *self)
 {
    int res = lora_init();
+   PyEval_InitThreads();                     // it seems to be necessary for using the global interpreter lock (GIL)
    return PyInt_FromLong(res);
 }
 
@@ -227,7 +229,10 @@ send_packet(PyObject *self, PyObject *args)
     */
    uint8_t *buf = PyByteArray_AsString(msg);
    int size = PyByteArray_Size(msg);
+   Py_BEGIN_ALLOW_THREADS
    lora_send_packet(buf, size);
+   Py_END_ALLOW_THREADS
+
    Py_XDECREF(msg);
    Py_RETURN_NONE;
 }
@@ -259,6 +264,66 @@ receive_packet(PyObject *self)
    return res;
 }
 
+static PyObject *callback_function = NULL;
+
+static void __packet_received(void)
+{
+   if(callback_function == NULL) return;
+   
+   PyGILState_STATE gstate = PyGILState_Ensure();
+   if(!PyCallable_Check(callback_function)) {
+      PyGILState_Release(gstate);
+      return;
+   }
+
+   PyObject *args = Py_BuildValue("()");
+   PyObject *res = PyEval_CallObject(callback_function, args);
+   Py_XDECREF(args);
+   Py_XDECREF(res);
+   PyGILState_Release(gstate);
+}
+
+static PyObject *
+on_receive(PyObject *self, PyObject *args)
+{
+   PyObject *funct;
+   if(!check()) return NULL;
+   
+   if(!PyArg_ParseTuple(args, "O", &funct)) return NULL;
+   
+   if(funct == Py_None) {
+      Py_XDECREF(callback_function);
+      callback_function = NULL;
+      lora_on_receive(NULL);
+      Py_RETURN_NONE;
+   } 
+   
+   if((funct == NULL) || (!PyCallable_Check(funct))) {
+      PyErr_SetString(PyExc_RuntimeError, "Parameter for on_receive() must be callable");
+      return NULL;
+   }
+   
+   Py_XINCREF(funct);
+   Py_XDECREF(callback_function);
+   callback_function = funct;
+   lora_on_receive(__packet_received);
+   Py_RETURN_NONE;
+}
+
+static PyObject *
+wait_for_packet(PyObject *self, PyObject *args)
+{
+   int timeout = -1;
+   if(!check()) return NULL;
+   if(!PyArg_ParseTuple(args, "|i", &timeout)) return NULL;
+ 
+   Py_BEGIN_ALLOW_THREADS
+   lora_wait_for_packet(timeout);
+   Py_END_ALLOW_THREADS
+ 
+   Py_RETURN_NONE;
+}
+
 /**
  * Method list for PyLora module
  */
@@ -286,6 +351,8 @@ static PyMethodDef metodos[] = {
    { "send_packet", send_packet, METH_VARARGS, "Broadcast a message" },
    { "packet_available", packet_available, METH_NOARGS, "Check if data is received" },
    { "receive_packet", receive_packet, METH_NOARGS, "Read the last received packet" },
+   { "on_receive", on_receive, METH_VARARGS, "Register a callback function for packet reception" },
+   { "wait_for_packet", wait_for_packet, METH_VARARGS, "Suspend execution until a packet arrives or a timeout occurs" },
    { NULL, NULL, 0, NULL }
 };
 

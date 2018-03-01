@@ -43,7 +43,7 @@ ASFLAGS = -g
 #
 CFLAGS+= -I. -I$(INCLUDE)
 CXXFLAGS+= -I. -I$(INCLUDE)
-#LDFLAGS+= -lpthread -lconfig++ -lpigpio -lrt
+LDFLAGS+= -lpthread
 #LDFLAGS+= -lpthread -lpigpio -lrt `mysql_config --libs`
 
 #

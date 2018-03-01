@@ -17,7 +17,7 @@ void lora_set_preamble_length(long length);
 void lora_set_sync_word(int sw);
 void lora_enable_crc(void);
 void lora_disable_crc(void);
-void lora_set_pins(char *spidev, int cs, int rst);
+void lora_set_pins(char *spidev, int cs, int rst, int irq);
 int lora_init(void);
 void lora_send_packet(uint8_t *buf, int size);
 int lora_receive_packet(uint8_t *buf, int size);
@@ -27,5 +27,7 @@ float lora_packet_snr(void);
 void lora_close(void);
 int lora_initialized(void);
 void lora_dump_registers(void);
+void lora_wait_for_packet(int timeout);
+void lora_on_receive(void (*cb)(void));
 
 #endif

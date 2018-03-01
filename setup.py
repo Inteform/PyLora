@@ -11,7 +11,7 @@ mod = Extension("PyLora",
 
 setup(
     name = "PyLora",
-    version = "1.0",
+    version = "1.1",
     description = "Python interface with LoRa Radio Transceiver",
     author = "Bruno Abrantes Basseto",
     author_email = "bruno.basseto@inteform.com.br",

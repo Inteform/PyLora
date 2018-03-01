@@ -6,13 +6,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
+#include <pthread.h>
 
 /*
  * Hardware definitions
  */
 #define DEFAULT_SPI_DEVICE_NAME        "/dev/spidev0.0"
 #define DEFAULT_CS_PIN_NUMBER          25
-#define DEFAULT_RST_PIN_NUMBER         17       // 24
+#define DEFAULT_RST_PIN_NUMBER         17
+#define DEFAULT_IRQ_PIN_NUMBER         4
 
 /*
  * Register definitions
@@ -28,6 +30,7 @@
 #define REG_FIFO_TX_BASE_ADDR          0x0e
 #define REG_FIFO_RX_BASE_ADDR          0x0f
 #define REG_FIFO_RX_CURRENT_ADDR       0x10
+#define REG_IRQ_FLAGS_MASK             0x11
 #define REG_IRQ_FLAGS                  0x12
 #define REG_RX_NB_BYTES                0x13
 #define REG_PKT_SNR_VALUE              0x19
@@ -76,13 +79,25 @@
 static int __spi = -1;
 static int __cs = -1;
 static int __rst = -1;
+static int __irq = -1;
 
 static char __spi_device_name[80] = DEFAULT_SPI_DEVICE_NAME;
 static int __cs_pin_number = DEFAULT_CS_PIN_NUMBER;
 static int __rst_pin_number = DEFAULT_RST_PIN_NUMBER;
+static int __irq_pin_number = DEFAULT_IRQ_PIN_NUMBER;
 
 static int __implicit;
 static long __frequency;
+
+/*
+ * Asynchronous API
+ */
+static void (*__callback)(void) = NULL;
+static pthread_t __thid;
+static pthread_mutex_t __mutex;
+
+#define lock()          pthread_mutex_lock(&__mutex)
+#define unlock()        pthread_mutex_unlock(&__mutex)
 
 /**
  * Returns non-zero value if the hardware had been initialized
@@ -93,6 +108,7 @@ lora_initialized(void)
    if(__spi <= 0) return 0;
    if(__cs <= 0) return 0;
    if(__rst <= 0) return 0;
+   if(__irq <= 0) return 0;
    return 1;
 }
 
@@ -103,11 +119,12 @@ lora_initialized(void)
  * @param rst Negative Reset pin number if not negative.
  */
 void
-lora_set_pins(char *spidev, int cs, int rst)
+lora_set_pins(char *spidev, int cs, int rst, int irq)
 {
    if(spidev != NULL) strncpy(__spi_device_name, spidev, sizeof(__spi_device_name));
    if(cs >= 0) __cs_pin_number = cs;
    if(rst >= 0) __rst_pin_number = rst;
+   if(irq >= 0) __irq_pin_number = irq;
 }
 
 /**
@@ -163,7 +180,9 @@ void
 lora_explicit_header_mode(void)
 {
    __implicit = 0;
+   lock();
    lora_write_reg(REG_MODEM_CONFIG_1, lora_read_reg(REG_MODEM_CONFIG_1) & 0xfe);
+   unlock();
 }
 
 /**
@@ -175,8 +194,10 @@ void
 lora_implicit_header_mode(int size)
 {
    __implicit = 1;
+   lock();
    lora_write_reg(REG_MODEM_CONFIG_1, lora_read_reg(REG_MODEM_CONFIG_1) | 0x01);
    lora_write_reg(REG_PAYLOAD_LENGTH, size);
+   unlock();
 }
 
 /**
@@ -186,7 +207,9 @@ lora_implicit_header_mode(int size)
 void 
 lora_idle(void)
 {
+   lock();
    lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
+   unlock();
 }
 
 /**
@@ -195,8 +218,10 @@ lora_idle(void)
  */
 void 
 lora_sleep(void)
-{ 
+{
+   lock(); 
    lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_SLEEP);
+   unlock();
 }
 
 /**
@@ -206,7 +231,9 @@ lora_sleep(void)
 void 
 lora_receive(void)
 {
+   lock();
    lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_RX_CONTINUOUS);
+   unlock();
 }
 
 /**
@@ -219,7 +246,9 @@ lora_set_tx_power(int level)
    // RF9x module uses PA_BOOST pin
    if (level < 2) level = 2;
    else if (level > 17) level = 17;
+   lock();
    lora_write_reg(REG_PA_CONFIG, PA_BOOST | (level - 2));
+   unlock();
 }
 
 /**
@@ -233,9 +262,11 @@ lora_set_frequency(long frequency)
 
    uint64_t frf = ((uint64_t)frequency << 19) / 32000000;
 
+   lock();
    lora_write_reg(REG_FRF_MSB, (uint8_t)(frf >> 16));
    lora_write_reg(REG_FRF_MID, (uint8_t)(frf >> 8));
    lora_write_reg(REG_FRF_LSB, (uint8_t)(frf >> 0));
+   unlock();
 }
 
 /**
@@ -248,6 +279,7 @@ lora_set_spreading_factor(int sf)
    if (sf < 6) sf = 6;
    else if (sf > 12) sf = 12;
 
+   lock();
    if (sf == 6) {
       lora_write_reg(REG_DETECTION_OPTIMIZE, 0xc5);
       lora_write_reg(REG_DETECTION_THRESHOLD, 0x0c);
@@ -257,6 +289,7 @@ lora_set_spreading_factor(int sf)
    }
 
    lora_write_reg(REG_MODEM_CONFIG_2, (lora_read_reg(REG_MODEM_CONFIG_2) & 0x0f) | ((sf << 4) & 0xf0));
+   unlock();
 }
 
 /**
@@ -278,7 +311,9 @@ lora_set_bandwidth(long sbw)
    else if (sbw <= 125E3) bw = 7;
    else if (sbw <= 250E3) bw = 8;
    else bw = 9;
+   lock();
    lora_write_reg(REG_MODEM_CONFIG_1, (lora_read_reg(REG_MODEM_CONFIG_1) & 0x0f) | (bw << 4));
+   unlock();
 }
 
 /**
@@ -292,7 +327,9 @@ lora_set_coding_rate(int denominator)
    else if (denominator > 8) denominator = 8;
 
    int cr = denominator - 4;
+   lock();
    lora_write_reg(REG_MODEM_CONFIG_1, (lora_read_reg(REG_MODEM_CONFIG_1) & 0xf1) | (cr << 1));
+   unlock();
 }
 
 /**
@@ -302,8 +339,10 @@ lora_set_coding_rate(int denominator)
 void 
 lora_set_preamble_length(long length)
 {
+   lock();
    lora_write_reg(REG_PREAMBLE_MSB, (uint8_t)(length >> 8));
    lora_write_reg(REG_PREAMBLE_LSB, (uint8_t)(length >> 0));
+   unlock();
 }
 
 /**
@@ -313,7 +352,9 @@ lora_set_preamble_length(long length)
 void 
 lora_set_sync_word(int sw)
 {
+   lock();
    lora_write_reg(REG_SYNC_WORD, sw);
+   unlock();
 }
 
 /**
@@ -322,7 +363,9 @@ lora_set_sync_word(int sw)
 void 
 lora_enable_crc(void)
 {
+   lock();
    lora_write_reg(REG_MODEM_CONFIG_2, lora_read_reg(REG_MODEM_CONFIG_2) | 0x04);
+   unlock();
 }
 
 /**
@@ -331,7 +374,9 @@ lora_enable_crc(void)
 void 
 lora_disable_crc(void)
 {
+   lock();
    lora_write_reg(REG_MODEM_CONFIG_2, lora_read_reg(REG_MODEM_CONFIG_2) & 0xfb);
+   unlock();
 }
 
 /**
@@ -359,6 +404,20 @@ lora_init(void)
       return __rst;
    }
 
+   __irq = gpio_open(__irq_pin_number, 0);
+   if(__irq < 0) {
+      close(__spi);
+      close(__cs);
+      close(__rst);
+      return __irq;
+   }
+
+   /*
+    * Init mutex and callback
+    */
+   __callback = NULL;
+   pthread_mutex_init(&__mutex, NULL);
+
    /*
     * Perform hardware reset.
     */
@@ -374,13 +433,18 @@ lora_init(void)
     * Default configuration.
     */
    lora_sleep();
+ 
+   lock();
    lora_write_reg(REG_FIFO_RX_BASE_ADDR, 0);
    lora_write_reg(REG_FIFO_TX_BASE_ADDR, 0);
    lora_write_reg(REG_LNA, lora_read_reg(REG_LNA) | 0x03);
    lora_write_reg(REG_MODEM_CONFIG_3, 0x04);
+   unlock();
+ 
    lora_set_tx_power(17);
 
    lora_idle();
+   return 1;
 }
 
 /**
@@ -391,13 +455,16 @@ lora_init(void)
 void 
 lora_send_packet(uint8_t *buf, int size)
 {
+   int i;
+
    /*
     * Transfer data to radio.
     */
-   lora_idle();
+   lock();
+   lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
    lora_write_reg(REG_FIFO_ADDR_PTR, 0);
 
-   for(int i=0; i<size; i++) 
+   for(i=0; i<size; i++) 
       lora_write_reg(REG_FIFO, *buf++);
    
    lora_write_reg(REG_PAYLOAD_LENGTH, size);
@@ -410,6 +477,7 @@ lora_send_packet(uint8_t *buf, int size)
       usleep(100);
 
    lora_write_reg(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK);
+   unlock();
 }
 
 /**
@@ -421,31 +489,34 @@ lora_send_packet(uint8_t *buf, int size)
 int 
 lora_receive_packet(uint8_t *buf, int size)
 {
-   int len = 0;
-
+   int i, len = 0;
+ 
    /*
     * Check interrupts.
     */
+   lock();
    int irq = lora_read_reg(REG_IRQ_FLAGS);
    lora_write_reg(REG_IRQ_FLAGS, irq);
+   unlock();
    if((irq & IRQ_RX_DONE_MASK) == 0) return 0;
    if(irq & IRQ_PAYLOAD_CRC_ERROR_MASK) return 0;
 
    /*
     * Find packet size.
     */
+   lock();
+   lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
    if (__implicit) len = lora_read_reg(REG_PAYLOAD_LENGTH);
    else len = lora_read_reg(REG_RX_NB_BYTES);
 
    /*
     * Transfer data from radio.
     */
-   lora_idle();   
    lora_write_reg(REG_FIFO_ADDR_PTR, lora_read_reg(REG_FIFO_RX_CURRENT_ADDR));
    if(len > size) len = size;
-   for(int i=0; i<len; i++) 
+   for(i=0; i<len; i++) 
       *buf++ = lora_read_reg(REG_FIFO);
-
+   unlock();
    return len;
 }
 
@@ -455,8 +526,66 @@ lora_receive_packet(uint8_t *buf, int size)
 int
 lora_received(void)
 {
-   if(lora_read_reg(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK) return 1;
+   lock();
+   int m = lora_read_reg(REG_IRQ_FLAGS) & IRQ_RX_DONE_MASK;
+   unlock();
+   if(m) return 1;
    return 0;
+}
+
+/**
+ * Suspend the current thread until a packet arrives or a timeout occurs.
+ * @param timeout Timeout in ms.
+ */
+void
+lora_wait_for_packet(int timeout)
+{
+   lock();
+   lora_write_reg(REG_OP_MODE, MODE_LONG_RANGE_MODE | MODE_STDBY);
+   lora_write_reg(REG_IRQ_FLAGS_MASK, 0x9f);
+   lora_write_reg(REG_DIO_MAPPING_1, 0x00);
+   unlock();
+   lora_receive();
+   gpio_wait(__irq_pin_number, __irq, 1, timeout);
+}
+
+/**
+ * Secondary thread entry point.
+ */
+void *__thread_wait(void *p)
+{
+   p = p;
+   pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+   pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+   while(1) {
+      lora_wait_for_packet(-1);
+      if(__callback != NULL)
+         __callback();
+   }
+   return NULL;
+}
+
+/**
+ * Define a callback function for packet reception.
+ * @param cb Callback function to use (NULL to cancel callbacks).
+ */
+void lora_on_receive(void (*cb)(void))
+{
+   if((cb == NULL) && (__callback != NULL)) {
+      pthread_cancel(__thid);
+      pthread_join(__thid, NULL);
+      __callback = NULL;
+      return;
+   }
+
+   if(__callback == NULL) {
+      __callback = cb;
+      pthread_create(&__thid, NULL, __thread_wait, NULL);
+      return;
+   }
+
+   __callback = cb;
 }
 
 /**
@@ -465,7 +594,10 @@ lora_received(void)
 int 
 lora_packet_rssi(void)
 {
-   return (lora_read_reg(REG_PKT_RSSI_VALUE) - (__frequency < 868E6 ? 164 : 157));
+   lock();
+   int v = lora_read_reg(REG_PKT_RSSI_VALUE);
+   unlock();
+   return v - (__frequency < 868E6 ? 164 : 157);
 }
 
 /**
@@ -474,7 +606,10 @@ lora_packet_rssi(void)
 float 
 lora_packet_snr(void)
 {
-   return ((int8_t)lora_read_reg(REG_PKT_SNR_VALUE)) * 0.25;
+   lock();
+   int v = lora_read_reg(REG_PKT_SNR_VALUE);
+   unlock();
+   return ((int8_t)v) * 0.25;
 }
 
 /**
@@ -484,12 +619,21 @@ void
 lora_close(void)
 {
    lora_sleep();
+   
+   if(__callback != NULL) {
+      pthread_cancel(__thid);
+      pthread_join(__thid, NULL);
+      __callback = NULL;
+   }
+
    close(__spi);
-   close(__cs);
-   close(__rst);
+   gpio_close(__cs_pin_number, __cs);
+   gpio_close(__rst_pin_number, __rst);
+   gpio_close(__irq_pin_number, __irq);
    __spi = -1;
    __cs = -1;
    __rst = -1;
+   __irq = -1;
 }
 
 void 
